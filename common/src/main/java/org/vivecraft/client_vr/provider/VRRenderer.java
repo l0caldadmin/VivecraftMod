@@ -36,6 +36,7 @@ import org.vivecraft.client_vr.gameplay.trackers.TelescopeTracker;
 import org.vivecraft.client_vr.render.RenderConfigException;
 import org.vivecraft.client_vr.render.VRShaders;
 import org.vivecraft.client_vr.render.helpers.graphics.GraphicsHelper;
+import org.vivecraft.client_vr.render.helpers.graphics.VulkanHelper;
 import org.vivecraft.client_vr.settings.VRSettings;
 import org.vivecraft.client_xr.render_pass.RenderPassManager;
 import org.vivecraft.client_xr.render_pass.WorldRenderPass;
@@ -927,11 +928,26 @@ public abstract class VRRenderer {
     }
 
     private void checkIfSupportedGpu() throws RenderConfigException {
+        // Intel Arc discrete GPUs (Alchemist "A-series" and Battlemage "B-series") work correctly
+        // on the Vulkan backend. The original interop concern only applies to OpenGL on Windows.
+        // Skip the block entirely when running on Vulkan.
+        boolean isVulkanBackend = GraphicsHelper.INSTANCE instanceof VulkanHelper;
+        if (isVulkanBackend) {
+            return;
+        }
+
         // intel drivers have issues with interop on windows so throw an error
         if (Util.getPlatform() == Util.OS.WINDOWS &&
             RenderSystem.getDevice().getDeviceInfo().name().toLowerCase().contains("intel") &&
             ClientDataHolderVR.getInstance().vrSettings.blockIntelWindows)
         {
+            String gpuName = RenderSystem.getDevice().getDeviceInfo().name().toLowerCase();
+
+            // Intel Arc discrete GPUs (Alchemist = "Arc A", Battlemage = "Arc B") support
+            // Vulkan 1.3+ and work correctly on the Vulkan backend. On OpenGL they may still
+            // have interop issues, so suggest switching to Vulkan instead of hard-blocking.
+            boolean isIntelArc = gpuName.contains("arc");
+
             StringBuilder gpus = new StringBuilder();
             boolean onlyIntel = true;
             for (GraphicsCard gpu : (new SystemInfo()).getHardware().getGraphicsCards()) {
@@ -950,19 +966,28 @@ public abstract class VRRenderer {
                 }
                 gpus.append(gpu.getVendor()).append(": ").append(gpu.getName());
             }
+
             Component message;
-            message = Component.translatable("vivecraft.messages.intelgraphics1",
-                Component.literal(RenderSystem.getDevice().getDeviceInfo().name())
-                    .withStyle(ChatFormatting.GOLD),
-                gpus.toString(),
-                onlyIntel ? Component.empty() :
-                    Component.translatable("vivecraft.messages.intelgraphics2",
-                        Component.literal("https://www.vivecraft.org/faq/#gpu")
-                            .withStyle(style -> style.withUnderlined(true)
-                                .withColor(ChatFormatting.GREEN)
-                                .withHoverEvent(new HoverEvent.ShowText(CommonComponents.GUI_OPEN_IN_BROWSER))
-                                .withClickEvent(new ClickEvent.OpenUrl(
-                                    ClientUtils.parseUri("https://www.vivecraft.org/faq/#gpu"))))));
+            if (isIntelArc) {
+                // Intel Arc (Alchemist/Battlemage): suggest switching to Vulkan backend
+                message = Component.translatable("vivecraft.messages.intelarc1",
+                    Component.literal(RenderSystem.getDevice().getDeviceInfo().name())
+                        .withStyle(ChatFormatting.GOLD));
+            } else {
+                // Integrated Intel (UHD, Iris, Xe-LP, etc.): keep the hard block
+                message = Component.translatable("vivecraft.messages.intelgraphics1",
+                    Component.literal(RenderSystem.getDevice().getDeviceInfo().name())
+                        .withStyle(ChatFormatting.GOLD),
+                    gpus.toString(),
+                    onlyIntel ? Component.empty() :
+                        Component.translatable("vivecraft.messages.intelgraphics2",
+                            Component.literal("https://www.vivecraft.org/faq/#gpu")
+                                .withStyle(style -> style.withUnderlined(true)
+                                    .withColor(ChatFormatting.GREEN)
+                                    .withHoverEvent(new HoverEvent.ShowText(CommonComponents.GUI_OPEN_IN_BROWSER))
+                                    .withClickEvent(new ClickEvent.OpenUrl(
+                                        ClientUtils.parseUri("https://www.vivecraft.org/faq/#gpu"))))));
+            }
 
             throw new RenderConfigException(Component.translatable("vivecraft.messages.incompatiblegpu"), message);
         }

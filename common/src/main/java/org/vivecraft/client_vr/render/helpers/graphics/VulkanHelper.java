@@ -44,8 +44,8 @@ public class VulkanHelper implements GraphicsHelper {
     public void genMipmaps(GpuTexture texture) {
         VulkanGpuTexture vulkanTexture = getVulkanTexture(texture);
 
-        VkCommandBuffer blitCommandBuffer = getVulkanDevice().createCommandEncoder()
-            .allocateAndBeginTransientCommandBuffer();
+        com.mojang.blaze3d.vulkan.VulkanCommandEncoder encoder = getVulkanDevice().createCommandEncoder();
+        VkCommandBuffer blitCommandBuffer = ((org.vivecraft.client.extensions.VulkanCommandEncoderExtension) (Object) encoder).vivecraft$commandBuffer();
 
         // transfer base level to src optimal
         transitionImageLayoutTo(blitCommandBuffer, vulkanTexture.vkImage(),
@@ -67,7 +67,7 @@ public class VulkanHelper implements GraphicsHelper {
                 vulkanTexture.vkImage(), i - 1, 0, 0, vulkanTexture.getWidth(i - 1), vulkanTexture.getHeight(i - 1),
                 vulkanTexture.vkImage(), i, 0, 0, vulkanTexture.getWidth(i), vulkanTexture.getHeight(i));
 
-            // transition the source layer to src optimal for next layer
+            // transfer the target layer back to src optimal for the next mip level
             transitionImageLayoutTo(blitCommandBuffer, vulkanTexture.vkImage(),
                 i, 1,
                 VK10.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK10.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
@@ -75,16 +75,16 @@ public class VulkanHelper implements GraphicsHelper {
                 VK10.VK_PIPELINE_STAGE_TRANSFER_BIT, VK10.VK_PIPELINE_STAGE_TRANSFER_BIT);
         }
 
-        // every mip is now in src optimal, transfer all mips at once back into the genreal layout
+        // transfer all levels back to general
         transitionImageLayoutTo(blitCommandBuffer, vulkanTexture.vkImage(),
-            0, vulkanTexture.getMipLevels(),
+            0, texture.getMipLevels(),
             VK10.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK10.VK_IMAGE_LAYOUT_GENERAL,
-            VK10.VK_ACCESS_TRANSFER_READ_BIT, VK10.VK_ACCESS_SHADER_READ_BIT,
-            VK10.VK_PIPELINE_STAGE_TRANSFER_BIT, VK10.VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+            VK10.VK_ACCESS_TRANSFER_READ_BIT, VK10.VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+            VK10.VK_PIPELINE_STAGE_TRANSFER_BIT, VK10.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
 
-        VulkanUtils.crashIfFailure(getVulkanDevice(), VK12.vkEndCommandBuffer(blitCommandBuffer),
-            "Failed to end VkCommandBuffer");
-        getVulkanDevice().createCommandEncoder().execute(blitCommandBuffer);
+        if (encoder != null) {
+            ((org.vivecraft.client.extensions.VulkanCommandEncoderExtension) (Object) encoder).vivecraft$flush();
+        }
     }
 
     /**
@@ -193,6 +193,45 @@ public class VulkanHelper implements GraphicsHelper {
         }
     }
 
+    /**
+     * Transitions the given VkImages from VK_IMAGE_LAYOUT_GENERAL to VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+     * which is required before submitting eye textures to the OpenVR/ALVR compositor.
+     * Must be paired with {@link #transitionEyeImagesAfterHandoff(long[])} after VRCompositor_PostPresentHandoff.
+     *
+     * @param vkImages array of VkImage handles to transition (one per eye)
+     */
+    public void transitionEyeImagesForSubmit(long[] vkImages) {
+        com.mojang.blaze3d.vulkan.VulkanCommandEncoder encoder = getVulkanDevice().createCommandEncoder();
+        VkCommandBuffer cmd = ((org.vivecraft.client.extensions.VulkanCommandEncoderExtension) (Object) encoder).vivecraft$commandBuffer();
+
+        for (long vkImage : vkImages) {
+            transitionImageLayoutTo(cmd, vkImage,
+                0, 1,
+                VK10.VK_IMAGE_LAYOUT_GENERAL, VK10.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                VK10.VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK10.VK_ACCESS_TRANSFER_READ_BIT,
+                VK10.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK10.VK_PIPELINE_STAGE_TRANSFER_BIT);
+        }
+    }
+
+    /**
+     * Transitions the given VkImages back from VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL to VK_IMAGE_LAYOUT_GENERAL,
+     * restoring them for use by Minecraft's renderer after the compositor handoff.
+     *
+     * @param vkImages array of VkImage handles to transition (one per eye)
+     */
+    public void transitionEyeImagesAfterHandoff(long[] vkImages) {
+        com.mojang.blaze3d.vulkan.VulkanCommandEncoder encoder = getVulkanDevice().createCommandEncoder();
+        VkCommandBuffer cmd = ((org.vivecraft.client.extensions.VulkanCommandEncoderExtension) (Object) encoder).vivecraft$commandBuffer();
+
+        for (long vkImage : vkImages) {
+            transitionImageLayoutTo(cmd, vkImage,
+                0, 1,
+                VK10.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK10.VK_IMAGE_LAYOUT_GENERAL,
+                VK10.VK_ACCESS_TRANSFER_READ_BIT, VK10.VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                VK10.VK_PIPELINE_STAGE_TRANSFER_BIT, VK10.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
+        }
+    }
+
     @Override
     public String checkError(String errorSection) {
         // can't check errors like that on vulkan
@@ -208,7 +247,12 @@ public class VulkanHelper implements GraphicsHelper {
     public void setStencil(boolean state) {}
 
     @Override
-    public void flush() {}
+    public void flush() {
+        com.mojang.blaze3d.vulkan.VulkanCommandEncoder encoder = getVulkanDevice().createCommandEncoder();
+        if (encoder != null) {
+            ((org.vivecraft.client.extensions.VulkanCommandEncoderExtension) (Object) encoder).vivecraft$flush();
+        }
+    }
 
     @Override
     public boolean flipEyeVertically() {

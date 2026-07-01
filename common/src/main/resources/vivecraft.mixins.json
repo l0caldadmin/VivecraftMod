@@ -48,6 +48,7 @@
     "client_vr.blaze3d.platform.InputConstantsVRMixin",
     "client_vr.blaze3d.platform.WindowVRMixin",
     "client_vr.blaze3d.vulkan.VulkanBackendVRMixin",
+    "client_vr.blaze3d.vulkan.VulkanCommandEncoderMixin",
     "client_vr.blaze3d.vulkan.VulkanDeviceVRMixin",
     "client_vr.blaze3d.vulkan.VulkanInstanceVRMixin",
     "client_vr.blaze3d.vulkan.VulkanPhysicalDeviceVRMixin",

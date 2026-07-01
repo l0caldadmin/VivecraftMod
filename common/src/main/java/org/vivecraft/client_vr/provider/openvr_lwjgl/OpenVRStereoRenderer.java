@@ -35,6 +35,8 @@ public class OpenVRStereoRenderer extends VRRenderer {
     private final MCOpenVR openvr;
 
     private final VRVulkanTextureData[] vkEyeData = new VRVulkanTextureData[2];
+    // cached VkImage handles for the eye framebuffers, used for layout transitions
+    private long[] vkEyeImages = null;
 
     public OpenVRStereoRenderer(MCVR vr) {
         super(vr);
@@ -175,9 +177,11 @@ public class OpenVRStereoRenderer extends VRRenderer {
 
         // populate vk objects
         if (GraphicsHelper.INSTANCE instanceof VulkanHelper vkHelper) {
+            this.vkEyeImages = new long[2];
             for (int i = 0; i < 2; i++) {
-                this.vkEyeData[i].m_nImage(
-                    GraphicsHelper.INSTANCE.getTextureHandle(this.framebufferEye[i].getColorTexture()));
+                long imageHandle = GraphicsHelper.INSTANCE.getTextureHandle(
+                    this.framebufferEye[i].getColorTexture());
+                this.vkEyeData[i].m_nImage(imageHandle);
                 this.vkEyeData[i].m_pDevice(vkHelper.getDevicePointer());
                 this.vkEyeData[i].m_pPhysicalDevice(vkHelper.getPhysicalDevicePointer());
                 this.vkEyeData[i].m_pInstance(vkHelper.getInstancePointer());
@@ -188,6 +192,8 @@ public class OpenVRStereoRenderer extends VRRenderer {
                 this.vkEyeData[i].m_nFormat(VulkanConst.toVk(this.framebufferEye[i].gpuFormat));
                 // hardcoded, maybe mixin to store per target?
                 this.vkEyeData[i].m_nSampleCount(1);
+                // cache for per-frame layout transitions
+                this.vkEyeImages[i] = imageHandle;
             }
         } else {
             throw new IllegalStateException("Vivecraft: Vulkan on non vulkan device");
@@ -197,14 +203,25 @@ public class OpenVRStereoRenderer extends VRRenderer {
 
     @Override
     public void endFrame() throws RenderConfigException {
-        // technically we are supposed to transition Vulkan images to VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL
-        // vanilla has them in VK_IMAGE_LAYOUT_GENERAL by default which should also work though
+        // Vulkan requires eye images to be in VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL before
+        // submission to the compositor. Vanilla keeps them in VK_IMAGE_LAYOUT_GENERAL, which
+        // some compositors (e.g. ALVR on Intel Arc) do not accept — causing a black screen.
+        if (GraphicsHelper.INSTANCE instanceof VulkanHelper vkHelper && this.vkEyeImages != null) {
+            vkHelper.transitionEyeImagesForSubmit(this.vkEyeImages);
+            vkHelper.flush();
+        }
+
         int leftError = VRCompositor_Submit(VR.EVREye_Eye_Left, this.openvr.texType0, null,
             VR.EVRSubmitFlags_Submit_Default);
         int rightError = VRCompositor_Submit(VR.EVREye_Eye_Right, this.openvr.texType1, null,
             VR.EVRSubmitFlags_Submit_Default);
 
         VRCompositor_PostPresentHandoff();
+
+        // restore images to GENERAL so Minecraft can render into them next frame
+        if (GraphicsHelper.INSTANCE instanceof VulkanHelper vkHelper && this.vkEyeImages != null) {
+            vkHelper.transitionEyeImagesAfterHandoff(this.vkEyeImages);
+        }
 
         if (leftError + rightError > VR.EVRCompositorError_VRCompositorError_None) {
             throw new RenderConfigException(Component.literal("Compositor Error"),
